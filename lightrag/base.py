@@ -157,6 +157,8 @@ class QueryParam:
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
+    metadata_filter: dict[str, Any] | None = None
+    """Metadata filter to apply to the query."""
 
 
 @dataclass
@@ -212,7 +214,11 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results.
 
@@ -221,6 +227,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
             top_k: Number of top results to return
             query_embedding: Optional pre-computed embedding for the query.
                            If provided, skips embedding computation for better performance.
+            filter: Optional metadata filter to apply to the query.
         """
 
     @abstractmethod

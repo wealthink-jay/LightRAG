@@ -97,6 +97,10 @@ class QueryRequest(BaseModel):
         default=None,
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
     )
+    metadata_filter: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Metadata filter to apply to the query.",
+    )
 
     @field_validator("query", mode="after")
     @classmethod

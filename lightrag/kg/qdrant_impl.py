@@ -181,7 +181,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             {
                 "id": k,
                 "created_at": current_time,
-                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                **v,
             }
             for k, v in data.items()
         ]
@@ -198,11 +198,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         list_points = []
         for i, d in enumerate(list_data):
+            payload = d.copy()
             list_points.append(
                 models.PointStruct(
                     id=compute_mdhash_id_for_qdrant(d["id"]),
                     vector=embeddings[i],
-                    payload=d,
+                    payload=payload,
                 )
             )
 
@@ -212,7 +213,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         return results
 
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if query_embedding is not None:
             embedding = query_embedding
@@ -221,10 +226,22 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 [query], _priority=5
             )  # higher priority for query
             embedding = embedding_result[0]
+        qdrant_filter = None
+        if filter:
+            qdrant_filter = models.Filter(
+                should=[
+                    models.FieldCondition(
+                        key=key,
+                        match=models.MatchValue(value=value),
+                    )
+                    for key, value in filter.items()
+                ]
+            )
 
         results = self._client.search(
             collection_name=self.final_namespace,
             query_vector=embedding,
+            query_filter=qdrant_filter,
             limit=top_k,
             with_payload=True,
             score_threshold=self.cosine_better_than_threshold,

@@ -8,6 +8,7 @@ import aiofiles
 import shutil
 import traceback
 import pipmaster as pm
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
@@ -18,6 +19,7 @@ from fastapi import (
     File,
     HTTPException,
     UploadFile,
+    Form,
 )
 from pydantic import BaseModel, Field, field_validator
 
@@ -147,6 +149,9 @@ class InsertTextRequest(BaseModel):
         description="The text to insert",
     )
     file_source: str = Field(default=None, min_length=0, description="File Source")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Metadata for the document"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -163,6 +168,7 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "metadata": {"author": "John Doe", "year": 2025},
             }
         }
 
@@ -173,6 +179,7 @@ class InsertTextsRequest(BaseModel):
     Attributes:
         texts: List of text contents to be inserted into the RAG system
         file_sources: Sources of the texts (optional)
+        metadatas: List of metadata dictionaries to associate with each document (optional)
     """
 
     texts: list[str] = Field(
@@ -181,6 +188,9 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: list[str] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    metadatas: Optional[List[Optional[Dict[str, Any]]]] = Field(
+        default=None, description="List of metadata for each document"
     )
 
     @field_validator("texts", mode="after")
@@ -202,6 +212,10 @@ class InsertTextsRequest(BaseModel):
                 ],
                 "file_sources": [
                     "First file source (optional)",
+                ],
+                "metadatas": [
+                    {"author": "John Doe", "year": 2025},
+                    {"author": "Jane Doe", "year": 2026},
                 ],
             }
         }
@@ -833,7 +847,10 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1213,7 +1230,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    metadatas=[metadata] if metadata else None,
                 )
 
                 logger.info(
@@ -1297,7 +1317,12 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    metadata: Optional[Dict[str, Any]] = None,
+):
     """Index a file with track_id
 
     Args:
@@ -1307,7 +1332,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, metadata
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1356,6 +1381,7 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    metadatas: Optional[List[Optional[Dict[str, Any]]]] = None,
 ):
     """Index a list of texts with track_id
 
@@ -1374,7 +1400,7 @@ async def pipeline_index_texts(
                 for _ in range(len(file_sources), len(texts))
             ]
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=file_sources, track_id=track_id
+        input=texts, file_paths=file_sources, track_id=track_id, metadatas=metadatas
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -1695,7 +1721,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        metadata: Optional[str] = Form(None),
     ):
         """
         Upload a file to the input directory and index it.
@@ -1707,6 +1735,7 @@ def create_document_routes(
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            metadata (Optional[str]): A JSON string representing metadata for the document.
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -1744,6 +1773,14 @@ def create_document_routes(
                     message=f"File '{safe_filename}' already exists in the input directory.",
                     track_id="",
                 )
+            parsed_metadata = None
+            if metadata:
+                try:
+                    parsed_metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    raise HTTPException(
+                        status_code=400, detail="Invalid JSON format for metadata"
+                    )
 
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
@@ -1751,7 +1788,9 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(
+                pipeline_index_file, rag, file_path, track_id, parsed_metadata
+            )
 
             return InsertResponse(
                 status="success",
@@ -1814,6 +1853,7 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                metadatas=[request.metadata] if request.metadata else None,
             )
 
             return InsertResponse(
@@ -1880,6 +1920,7 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                metadatas=request.metadatas,
             )
 
             return InsertResponse(

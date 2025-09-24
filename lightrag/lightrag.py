@@ -1009,6 +1009,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        metadatas: list[dict[str, Any]] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1049,6 +1050,12 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
+        if metadatas is not None:
+            if len(metadatas) != len(input):
+                raise ValueError("Number of metadatas must match the number of documents")
+        else:
+            metadatas = [None] * len(input)
+
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
@@ -1061,31 +1068,32 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
+            for id_, doc, path, meta in zip(ids, input, file_paths, metadatas):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
+                    unique_contents[cleaned_content] = (id_, path, meta)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
-                for content, (id_, file_path) in unique_contents.items()
+                id_: {"content": content, "file_path": file_path, "metadata": metadata}
+                for content, (id_, file_path, metadata) in unique_contents.items()
             }
         else:
             # Clean input text and remove duplicates in one pass
-            unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+            unique_content_with_paths_and_meta = {}
+            for doc, path, meta in zip(input, file_paths, metadatas):
                 cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
+                if cleaned_content not in unique_content_with_paths_and_meta:
+                    unique_content_with_paths_and_meta[cleaned_content] = (path, meta)
 
             # Generate contents dict of MD5 hash IDs and documents with paths
             contents = {
                 compute_mdhash_id(content, prefix="doc-"): {
                     "content": content,
                     "file_path": path,
+                    "metadata": meta,
                 }
-                for content, path in unique_content_with_paths.items()
+                for content, (path, meta) in unique_content_with_paths_and_meta.items()
             }
 
         # 2. Generate document initial status (without content)
@@ -1100,6 +1108,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "metadata": content_data.get("metadata"),
             }
             for id_, content_data in contents.items()
         }
@@ -1483,10 +1492,11 @@ class LightRAG:
                         first_stage_tasks = []
                         entity_relation_task = None
                         try:
-                            # Get file path from status document
+                            # Get file path and metadata from status document
                             file_path = getattr(
                                 status_doc, "file_path", "unknown_source"
                             )
+                            metadata = getattr(status_doc, "metadata", {})
 
                             async with pipeline_status_lock:
                                 # Update processed file count and save current file number
@@ -1528,6 +1538,7 @@ class LightRAG:
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    **(metadata or {}),
                                 }
                                 for dp in self.chunking_func(
                                     self.tokenizer,
@@ -1667,6 +1678,7 @@ class LightRAG:
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
+                                    metadata=metadata,
                                 )
 
                                 # Record processing end time
