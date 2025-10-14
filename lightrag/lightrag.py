@@ -534,23 +534,24 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
+        ############ Metadata fields are set from here in `meta_fields` - make it dynamic or add out custom fields
         self.entities_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content", "file_path"},
+            meta_fields={"entity_name", "source_id", "content", "file_path", "metadata"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
+            meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path", "metadata"},
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
+            meta_fields={"full_doc_id", "content", "file_path", "metadata"},
         )
 
         # Initialize document status storage
@@ -898,6 +899,7 @@ class LightRAG:
             )
         )
 
+    ############# Indexing happens here #############
     async def ainsert(
         self,
         input: str | list[str],
@@ -906,6 +908,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        custom_meta_fields: list[dict[str, Any]] | dict[str, Any] | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -918,6 +921,8 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            custom_meta_fields: Optional dictionary of custom metadata fields to associate with each document.
+                These fields will be stored alongside the document status for enhanced tracking and querying.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -926,9 +931,9 @@ class LightRAG:
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
+        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id, custom_meta_fields)
         await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
+            split_by_character, split_by_character_only, custom_meta_fields
         )
 
         return track_id
@@ -961,7 +966,7 @@ class LightRAG:
                 doc_key = compute_mdhash_id(full_text, prefix="doc-")
             else:
                 doc_key = doc_id
-            new_docs = {doc_key: {"content": full_text, "file_path": file_path}}
+            new_docs = {doc_key: {"content": full_text}}
 
             _add_doc_keys = await self.full_docs.filter_keys({doc_key})
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
@@ -1005,12 +1010,14 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
+    ############# Propagate the custom metadata field insertion in here
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        custom_meta_fields: list[dict[str, Any]] | dict[str, Any] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1025,6 +1032,8 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            custom_meta_fields: Optional dictionary of custom metadata fields to associate with each document.
+                These fields will be stored alongside the document status for enhanced tracking and querying.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1051,6 +1060,23 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
+        if custom_meta_fields is not None:
+            if isinstance(custom_meta_fields, dict):
+                # If a single dict is provided, replicate it for all documents
+                custom_meta_fields = [custom_meta_fields] * len(input)
+            elif isinstance(custom_meta_fields, list):
+                if len(custom_meta_fields) != len(input):
+                    raise ValueError(
+                        "Length of custom_meta_fields list must match number of documents"
+                    )
+            else:
+                raise ValueError(
+                    "custom_meta_fields must be a dict or a list of dicts"
+                )
+        else:
+            # If no custom_meta_fields provided, use empty dicts
+            custom_meta_fields = [{}] * len(input)
+
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
@@ -1063,31 +1089,32 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
+            for id_, doc, path, metadata in zip(ids, input, file_paths, custom_meta_fields):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
+                    unique_contents[cleaned_content] = (id_, path, metadata)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
-                for content, (id_, file_path) in unique_contents.items()
+                id_: {"content": content, "file_path": file_path, "metadata": metadata}
+                for content, (id_, file_path, metadata) in unique_contents.items()
             }
         else:
             # Clean input text and remove duplicates in one pass
-            unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+            unique_content_with_paths_and_metadata = {}
+            for doc, path, metadata in zip(input, file_paths, custom_meta_fields):
                 cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
+                if cleaned_content not in unique_content_with_paths_and_metadata:
+                    unique_content_with_paths_and_metadata[cleaned_content] = (path, metadata)
 
-            # Generate contents dict of MD5 hash IDs and documents with paths
+            # Generate contents dict of MD5 hash IDs and documents with paths and metadata
             contents = {
                 compute_mdhash_id(content, prefix="doc-"): {
                     "content": content,
                     "file_path": path,
+                    "metadata": metadata,
                 }
-                for content, path in unique_content_with_paths.items()
+                for content, (path, metadata) in unique_content_with_paths_and_metadata.items()
             }
 
         # 2. Generate document initial status (without content)
@@ -1101,7 +1128,8 @@ class LightRAG:
                 "file_path": content_data[
                     "file_path"
                 ],  # Store file path in document status
-                "track_id": track_id,  # Store track_id in document status
+                "track_id": track_id,  # Store track_id in document status,
+                "metadata": content_data.get("metadata", {}),
             }
             for id_, content_data in contents.items()
         }
@@ -1139,12 +1167,10 @@ class LightRAG:
         # 4. Store document content in full_docs and status in doc_status
         #    Store full document content separately
         full_docs_data = {
-            doc_id: {
-                "content": contents[doc_id]["content"],
-                "file_path": contents[doc_id]["file_path"],
-            }
+            doc_id: {"content": contents[doc_id]["content"], "metadata": contents[doc_id].get("metadata", {})}
             for doc_id in new_docs.keys()
         }
+
         await self.full_docs.upsert(full_docs_data)
         # Persist data to disk immediately
         await self.full_docs.index_done_callback()
@@ -1353,15 +1379,20 @@ class LightRAG:
 
         return to_process_docs
 
+    ############# Vector DB upsert happens here #############
+    ############# Entity and Relation extraction happens here #############
     async def apipeline_process_enqueue_documents(
         self,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        custom_meta_fields: dict[str, Any] | None = None,
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
         each chunk for entity and relation extraction, and updating the
         document status.
+
+        Also inserts metadata along with the chunks.
 
         1. Get all pending, failed, and abnormally terminated processing documents.
         2. Validate document data consistency and fix any issues
@@ -1470,6 +1501,7 @@ class LightRAG:
                 # Create a semaphore to limit the number of concurrent file processing
                 semaphore = asyncio.Semaphore(self.max_parallel_insert)
 
+                ######################################################### Processing happens here #########################################################
                 async def process_document(
                     doc_id: str,
                     status_doc: DocProcessingStatus,
@@ -1492,6 +1524,7 @@ class LightRAG:
                             file_path = getattr(
                                 status_doc, "file_path", "unknown_source"
                             )
+                            metadata = getattr(status_doc, "metadata", {})
 
                             async with pipeline_status_lock:
                                 # Update processed file count and save current file number
@@ -1533,6 +1566,7 @@ class LightRAG:
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    "metadata": metadata,  # Add custom metadata to each chunk
                                 }
                                 for dp in self.chunking_func(
                                     self.tokenizer,
@@ -1549,6 +1583,7 @@ class LightRAG:
 
                             # Record processing start time
                             processing_start_time = int(time.time())
+                            # metadata["processing_start_time"] = processing_start_time
 
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)
@@ -1569,13 +1604,12 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "metadata": {
-                                                "processing_start_time": processing_start_time
-                                            },
+                                            "metadata": metadata,
                                         }
                                     }
                                 )
                             )
+                            ########## Upserts here ##########
                             chunks_vdb_task = asyncio.create_task(
                                 self.chunks_vdb.upsert(chunks)
                             )
@@ -1647,7 +1681,7 @@ class LightRAG:
                                         "metadata": {
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
-                                        },
+                                        }.update(metadata),
                                     }
                                 }
                             )
@@ -1672,6 +1706,7 @@ class LightRAG:
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
+                                    custom_meta_fields=metadata,
                                 )
 
                                 # Record processing end time
@@ -1694,7 +1729,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
-                                            },
+                                            }.update(metadata),
                                         }
                                     }
                                 )
@@ -1746,7 +1781,7 @@ class LightRAG:
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
-                                            },
+                                            }.update(metadata),
                                         }
                                     }
                                 )
@@ -1798,7 +1833,7 @@ class LightRAG:
                 to_process_docs.update(pending_docs)
 
         finally:
-            log_message = "Enqueued document processing pipeline stoped"
+            log_message = "Enqueued document processing pipeline stopped"
             logger.info(log_message)
             # Always reset busy status when done or if an exception occurs (with lock)
             async with pipeline_status_lock:
@@ -2063,55 +2098,79 @@ class LightRAG:
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> str | AsyncIterator[str]:
         """
-        Perform a async query (backward compatibility wrapper).
-
-        This function is now a wrapper around aquery_llm that maintains backward compatibility
-        by returning only the LLM response content in the original format.
+        Perform a async query.
 
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
                 If param.model_func is provided, it will be used instead of the global model.
-            system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
-            str | AsyncIterator[str]: The LLM response content.
-                - Non-streaming: Returns str
-                - Streaming: Returns AsyncIterator[str]
+            str: The result of the query execution.
         """
-        # Call the new aquery_llm function to get complete results
-        result = await self.aquery_llm(query, param, system_prompt)
+        # If a custom model is provided in param, temporarily update global config
+        global_config = asdict(self)
 
-        # Extract and return only the LLM response for backward compatibility
-        llm_response = result.get("llm_response", {})
+        query_result = None
 
-        if llm_response.get("is_streaming"):
-            return llm_response.get("response_iterator")
+        if param.mode in ["local", "global", "hybrid", "mix"]:
+            query_result = await kg_query(
+                query.strip(),
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=system_prompt,
+                chunks_vdb=self.chunks_vdb,
+                metadata_filter=metadata_filter,
+            )
+        elif param.mode == "naive":
+            query_result = await naive_query(
+                query.strip(),
+                self.chunks_vdb,
+                param,
+                global_config,
+                hashing_kv=self.llm_response_cache,
+                system_prompt=system_prompt,
+                metadata_filter=metadata_filter,
+            )
+        elif param.mode == "bypass":
+            # Bypass mode: directly use LLM without knowledge retrieval
+            use_llm_func = param.model_func or global_config["llm_model_func"]
+            # Apply higher priority (8) to entity/relation summary tasks
+            use_llm_func = partial(use_llm_func, _priority=8)
+
+            param.stream = True if param.stream is None else param.stream
+            response = await use_llm_func(
+                query.strip(),
+                system_prompt=system_prompt,
+                history_messages=param.conversation_history,
+                enable_cot=True,
+                stream=param.stream,
+            )
+            # Create QueryResult for bypass mode
+            query_result = QueryResult(
+                content=response if not param.stream else None,
+                response_iterator=response if param.stream else None,
+                is_streaming=param.stream,
+            )
         else:
-            return llm_response.get("content", "")
+            raise ValueError(f"Unknown mode {param.mode}")
 
-    def query_data(
-        self,
-        query: str,
-        param: QueryParam = QueryParam(),
-    ) -> dict[str, Any]:
-        """
-        Synchronous data retrieval API: returns structured retrieval results without LLM generation.
+        await self._query_done()
 
-        This function is the synchronous version of aquery_data, providing the same functionality
-        for users who prefer synchronous interfaces.
-
-        Args:
-            query: Query text for retrieval.
-            param: Query parameters controlling retrieval behavior (same as aquery).
-
-        Returns:
-            dict[str, Any]: Same structured data result as aquery_data.
-        """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery_data(query, param))
+        # Return appropriate response based on streaming mode
+        if query_result.is_streaming:
+            return query_result.response_iterator
+        else:
+            return query_result.content
 
     async def aquery_data(
         self,
@@ -2305,164 +2364,6 @@ class LightRAG:
         await self._query_done()
         return final_data
 
-    async def aquery_llm(
-        self,
-        query: str,
-        param: QueryParam = QueryParam(),
-        system_prompt: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Asynchronous complete query API: returns structured retrieval results with LLM generation.
-
-        This function performs a single query operation and returns both structured data and LLM response,
-        based on the original aquery logic to avoid duplicate calls.
-
-        Args:
-            query: Query text for retrieval and LLM generation.
-            param: Query parameters controlling retrieval and LLM behavior.
-            system_prompt: Optional custom system prompt for LLM generation.
-
-        Returns:
-            dict[str, Any]: Complete response with structured data and LLM response.
-        """
-        logger.debug(f"[aquery_llm] Query param: {param}")
-
-        global_config = asdict(self)
-
-        try:
-            query_result = None
-
-            if param.mode in ["local", "global", "hybrid", "mix"]:
-                query_result = await kg_query(
-                    query.strip(),
-                    self.chunk_entity_relation_graph,
-                    self.entities_vdb,
-                    self.relationships_vdb,
-                    self.text_chunks,
-                    param,
-                    global_config,
-                    hashing_kv=self.llm_response_cache,
-                    system_prompt=system_prompt,
-                    chunks_vdb=self.chunks_vdb,
-                )
-            elif param.mode == "naive":
-                query_result = await naive_query(
-                    query.strip(),
-                    self.chunks_vdb,
-                    param,
-                    global_config,
-                    hashing_kv=self.llm_response_cache,
-                    system_prompt=system_prompt,
-                )
-            elif param.mode == "bypass":
-                # Bypass mode: directly use LLM without knowledge retrieval
-                use_llm_func = param.model_func or global_config["llm_model_func"]
-                # Apply higher priority (8) to entity/relation summary tasks
-                use_llm_func = partial(use_llm_func, _priority=8)
-
-                param.stream = True if param.stream is None else param.stream
-                response = await use_llm_func(
-                    query.strip(),
-                    system_prompt=system_prompt,
-                    history_messages=param.conversation_history,
-                    enable_cot=True,
-                    stream=param.stream,
-                )
-                if type(response) is str:
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM non streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": response,
-                            "response_iterator": None,
-                            "is_streaming": False,
-                        },
-                    }
-                else:
-                    return {
-                        "status": "success",
-                        "message": "Bypass mode LLM streaming response",
-                        "data": {},
-                        "metadata": {},
-                        "llm_response": {
-                            "content": None,
-                            "response_iterator": response,
-                            "is_streaming": True,
-                        },
-                    }
-            else:
-                raise ValueError(f"Unknown mode {param.mode}")
-
-            await self._query_done()
-
-            # Check if query_result is None
-            if query_result is None:
-                return {
-                    "status": "failure",
-                    "message": "Query returned no results",
-                    "data": {},
-                    "metadata": {},
-                    "llm_response": {
-                        "content": None,
-                        "response_iterator": None,
-                        "is_streaming": False,
-                    },
-                }
-
-            # Extract structured data from query result
-            raw_data = query_result.raw_data if query_result else {}
-            raw_data["llm_response"] = {
-                "content": query_result.content
-                if not query_result.is_streaming
-                else None,
-                "response_iterator": query_result.response_iterator
-                if query_result.is_streaming
-                else None,
-                "is_streaming": query_result.is_streaming,
-            }
-
-            return raw_data
-
-        except Exception as e:
-            logger.error(f"Query failed: {e}")
-            # Return error response
-            return {
-                "status": "failure",
-                "message": f"Query failed: {str(e)}",
-                "data": {},
-                "metadata": {},
-                "llm_response": {
-                    "content": None,
-                    "response_iterator": None,
-                    "is_streaming": False,
-                },
-            }
-
-    def query_llm(
-        self,
-        query: str,
-        param: QueryParam = QueryParam(),
-        system_prompt: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Synchronous complete query API: returns structured retrieval results with LLM generation.
-
-        This function is the synchronous version of aquery_llm, providing the same functionality
-        for users who prefer synchronous interfaces.
-
-        Args:
-            query: Query text for retrieval and LLM generation.
-            param: Query parameters controlling retrieval and LLM behavior.
-            system_prompt: Optional custom system prompt for LLM generation.
-
-        Returns:
-            dict[str, Any]: Same complete response format as aquery_llm.
-        """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery_llm(query, param, system_prompt))
-
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
 
@@ -2571,12 +2472,11 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
-        """Delete a document and all its related data, including chunks, graph elements.
+        """Delete a document and all its related data, including chunks, graph elements, and cached entries.
 
         This method orchestrates a comprehensive deletion process for a given document ID.
         It ensures that not only the document itself but also all its derived and associated
-        data across different storage layers are removed or rebuiled. If entities or relationships
-        are partially affected, they will be rebuilded using LLM cached from remaining documents.
+        data across different storage layers are removed. If entities or relationships are partially affected, it triggers.
 
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
@@ -2617,12 +2517,7 @@ class LightRAG:
                 )
 
             # Check document status and log warning for non-completed documents
-            raw_status = doc_status_data.get("status")
-            try:
-                doc_status = DocStatus(raw_status)
-            except ValueError:
-                doc_status = raw_status
-
+            doc_status = doc_status_data.get("status")
             if doc_status != DocStatus.PROCESSED:
                 if doc_status == DocStatus.PENDING:
                     warning_msg = (
@@ -2632,23 +2527,12 @@ class LightRAG:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: PROCESSING)"
                     )
-                elif doc_status == DocStatus.PREPROCESSED:
-                    warning_msg = (
-                        f"Deleting {doc_id} {file_path}(previous status: PREPROCESSED)"
-                    )
                 elif doc_status == DocStatus.FAILED:
                     warning_msg = (
                         f"Deleting {doc_id} {file_path}(previous status: FAILED)"
                     )
                 else:
-                    status_text = (
-                        doc_status.value
-                        if isinstance(doc_status, DocStatus)
-                        else str(doc_status)
-                    )
-                    warning_msg = (
-                        f"Deleting {doc_id} {file_path}(previous status: {status_text})"
-                    )
+                    warning_msg = f"Deleting {doc_id} {file_path}(previous status: {doc_status.value})"
                 logger.info(warning_msg)
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:

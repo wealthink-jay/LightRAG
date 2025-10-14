@@ -1,10 +1,13 @@
 from ..utils import verbose_debug, VERBOSE_DEBUG
+import sys
 import os
 import logging
 
-from collections.abc import AsyncIterator
-
-import pipmaster as pm
+if sys.version_info < (3, 9):
+    from typing import AsyncIterator
+else:
+    from collections.abc import AsyncIterator
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("openai"):
@@ -51,7 +54,7 @@ class InvalidResponseError(Exception):
 def create_openai_async_client(
     api_key: str | None = None,
     base_url: str | None = None,
-    client_configs: dict[str, Any] | None = None,
+    client_configs: dict[str, Any] = None,
 ) -> AsyncOpenAI:
     """Create an AsyncOpenAI client with the given configuration.
 
@@ -116,7 +119,7 @@ async def openai_complete_if_cache(
 ) -> str:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
 
-    This function supports automatic integration of reasoning content from models that provide
+    This function supports automatic integration of reasoning content (思维链) from models that provide
     Chain of Thought capabilities. The reasoning content is seamlessly integrated into the response
     using <think>...</think> tags.
 
@@ -261,16 +264,19 @@ async def openai_complete_if_cache(
 
                     delta = chunk.choices[0].delta
                     content = getattr(delta, "content", None)
-                    reasoning_content = getattr(delta, "reasoning_content", "")
+                    reasoning_content = getattr(delta, "reasoning_content", None)
 
                     # Handle COT logic for streaming (only if enabled)
                     if enable_cot:
-                        if content:
+                        if content is not None and content != "":
                             # Regular content is present
                             if not initial_content_seen:
                                 initial_content_seen = True
                                 # If both content and reasoning_content are present initially, don't start COT
-                                if reasoning_content:
+                                if (
+                                    reasoning_content is not None
+                                    and reasoning_content != ""
+                                ):
                                     cot_active = False
                                     cot_started = False
 
@@ -284,7 +290,7 @@ async def openai_complete_if_cache(
                                 content = safe_unicode_decode(content.encode("utf-8"))
                             yield content
 
-                        elif reasoning_content:
+                        elif reasoning_content is not None and reasoning_content != "":
                             # Only reasoning content is present
                             if not initial_content_seen and not cot_started:
                                 # Start COT if we haven't seen initial content yet
@@ -302,7 +308,7 @@ async def openai_complete_if_cache(
                                 yield reasoning_content
                     else:
                         # COT disabled, only process regular content
-                        if content:
+                        if content is not None and content != "":
                             if r"\u" in content:
                                 content = safe_unicode_decode(content.encode("utf-8"))
                             yield content
@@ -409,7 +415,7 @@ async def openai_complete_if_cache(
 
             message = response.choices[0].message
             content = getattr(message, "content", None)
-            reasoning_content = getattr(message, "reasoning_content", "")
+            reasoning_content = getattr(message, "reasoning_content", None)
 
             # Handle COT logic for non-streaming responses (only if enabled)
             final_content = ""
@@ -576,10 +582,9 @@ async def nvidia_openai_complete(
 async def openai_embed(
     texts: list[str],
     model: str = "text-embedding-3-small",
-    base_url: str | None = None,
-    api_key: str | None = None,
-    client_configs: dict[str, Any] | None = None,
-    token_tracker: Any | None = None,
+    base_url: str = None,
+    api_key: str = None,
+    client_configs: dict[str, Any] = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API.
 
@@ -591,7 +596,6 @@ async def openai_embed(
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
-        token_tracker: Optional token usage tracker for monitoring API usage.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -610,14 +614,6 @@ async def openai_embed(
         response = await openai_async_client.embeddings.create(
             model=model, input=texts, encoding_format="base64"
         )
-
-        if token_tracker and hasattr(response, "usage"):
-            token_counts = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                "total_tokens": getattr(response.usage, "total_tokens", 0),
-            }
-            token_tracker.add_usage(token_counts)
-
         return np.array(
             [
                 np.array(dp.embedding, dtype=np.float32)

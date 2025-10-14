@@ -25,22 +25,6 @@ const generateUniqueId = () => {
   return `id-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 };
 
-// LaTeX completeness detection function
-const detectLatexCompleteness = (content: string): boolean => {
-  // Check for unclosed block-level LaTeX formulas ($$...$$)
-  const blockLatexMatches = content.match(/\$\$/g) || []
-  const hasUnclosedBlock = blockLatexMatches.length % 2 !== 0
-
-  // Check for unclosed inline LaTeX formulas ($...$, but not $$)
-  // Remove all block formulas first to avoid interference
-  const contentWithoutBlocks = content.replace(/\$\$[\s\S]*?\$\$/g, '')
-  const inlineLatexMatches = contentWithoutBlocks.match(/(?<!\$)\$(?!\$)/g) || []
-  const hasUnclosedInline = inlineLatexMatches.length % 2 !== 0
-
-  // LaTeX is complete if there are no unclosed formulas
-  return !hasUnclosedBlock && !hasUnclosedInline
-}
-
 // Robust COT parsing function to handle multiple think blocks and edge cases
 const parseCOTContent = (content: string) => {
   const thinkStartTag = '<think>'
@@ -113,8 +97,7 @@ export default function RetrievalTesting() {
           return {
             ...msg,
             id: msgWithError.id || `hist-${Date.now()}-${index}`, // Add ID if missing
-            mermaidRendered: msgWithError.mermaidRendered ?? true, // Assume historical mermaid is rendered
-            latexRendered: msgWithError.latexRendered ?? true // Assume historical LaTeX is rendered
+            mermaidRendered: msgWithError.mermaidRendered ?? true // Assume historical mermaid is rendered
           }
         } catch (error) {
           console.error('Error processing message:', error)
@@ -175,7 +158,7 @@ export default function RetrievalTesting() {
 
       // Parse query mode prefix
       const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
-      const prefixMatch = inputValue.match(/^\/(\w+)\s+([\s\S]+)/)
+      const prefixMatch = inputValue.match(/^\/(\w+)\s+(.+)/)
       let modeOverride: QueryMode | undefined = undefined
       let actualQuery = inputValue
 
@@ -220,7 +203,6 @@ export default function RetrievalTesting() {
         content: '',
         role: 'assistant',
         mermaidRendered: false,
-        latexRendered: false,      // Explicitly initialize to false
         thinkingTime: null,        // Explicitly initialize to null
         thinkingContent: undefined, // Explicitly initialize to undefined
         displayContent: undefined,  // Explicitly initialize to undefined
@@ -300,10 +282,6 @@ export default function RetrievalTesting() {
         }
         assistantMessage.mermaidRendered = mermaidRendered
 
-        // Detect if the assistant message contains complete LaTeX formulas
-        const latexRendered = detectLatexCompleteness(assistantMessage.content)
-        assistantMessage.latexRendered = latexRendered
-
         // Single unified update to avoid race conditions
         setMessages((prev) => {
           const newMessages = [...prev]
@@ -317,7 +295,6 @@ export default function RetrievalTesting() {
               isThinking: assistantMessage.isThinking,
               isError: isError,
               mermaidRendered: assistantMessage.mermaidRendered,
-              latexRendered: assistantMessage.latexRendered,
               thinkingTime: assistantMessage.thinkingTime
             })
           }

@@ -48,6 +48,41 @@ def compute_mdhash_id_for_qdrant(
         raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
 
 
+def get_filters(metadata_filter: dict) -> models.Filter:
+    """
+    input:
+    {
+        "k1": "v1",
+        "k2": "v2",
+        ...
+    }
+
+    output:
+    models.Filter(
+        must=[
+            models.FieldCondition(
+                key="metadata.k1",
+                match=models.MatchValue(value="v1"),
+            ),
+            models.FieldCondition(
+                key="metadata.k2",
+                match=models.MatchValue(value="v2"),
+            ),
+            ...
+        ]
+    )
+    """
+    must_conditions = [
+        models.FieldCondition(
+            key=f"metadata.{k}",
+            match=models.MatchValue(value=v),
+        )
+        for k, v in metadata_filter.items()
+    ]
+    logger.debug(f"Generated Qdrant filter: {must_conditions}")
+    return models.Filter(must=must_conditions)
+
+
 @final
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
@@ -184,7 +219,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
-        ]
+        ] # filter only meta_fields; Only for metadata fields
         contents = [v["content"] for v in data.values()]
         batches = [
             contents[i : i + self._max_batch_size]
@@ -212,25 +247,38 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         return results
 
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self,
+        query: str,
+        top_k: int,
+        query_embedding: list[float] = None,
+        metadata_filter: dict[str, Any] = None,
     ) -> list[dict[str, Any]]:
         if query_embedding is not None:
             embedding = query_embedding
         else:
-            embedding_result = await self.embedding_func(
-                [query], _priority=5
-            )  # higher priority for query
+            embedding_result = await self.embedding_func([query])  # higher priority for query
             embedding = embedding_result[0]
+        if metadata_filter is not None:
+            logger.info(f"[{self.workspace}] Applying metadata filter: {metadata_filter}")
+            results = self._client.search(
+                collection_name=self.final_namespace,
+                query_vector=embedding,
+                limit=top_k,
+                with_payload=True,
+                score_threshold=self.cosine_better_than_threshold,
+                query_filter=get_filters(metadata_filter)
+            )
+        else:
+            logger.info(f"[{self.workspace}] Fetching without filter")
+            results = self._client.search(
+                collection_name=self.final_namespace,
+                query_vector=embedding,
+                limit=top_k,
+                with_payload=True,
+                score_threshold=self.cosine_better_than_threshold,
+            )
 
-        results = self._client.search(
-            collection_name=self.final_namespace,
-            query_vector=embedding,
-            limit=top_k,
-            with_payload=True,
-            score_threshold=self.cosine_better_than_threshold,
-        )
-
-        # logger.debug(f"[{self.workspace}] query result: {results}")
+        logger.info(f"[{self.workspace}] query result: {results}")
 
         return [
             {
@@ -404,31 +452,15 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 with_payload=True,
             )
 
-            # Ensure each result contains created_at field and preserve caller ordering
-            payload_by_original_id: dict[str, dict[str, Any]] = {}
-            payload_by_qdrant_id: dict[str, dict[str, Any]] = {}
-
+            # Ensure each result contains created_at field
+            payloads = []
             for point in results:
-                payload = dict(point.payload or {})
+                payload = point.payload
                 if "created_at" not in payload:
                     payload["created_at"] = None
+                payloads.append(payload)
 
-                qdrant_point_id = str(point.id) if point.id is not None else ""
-                if qdrant_point_id:
-                    payload_by_qdrant_id[qdrant_point_id] = payload
-
-                original_id = payload.get("id")
-                if original_id is not None:
-                    payload_by_original_id[str(original_id)] = payload
-
-            ordered_payloads: list[dict[str, Any] | None] = []
-            for requested_id, qdrant_id in zip(ids, qdrant_ids):
-                payload = payload_by_original_id.get(str(requested_id))
-                if payload is None:
-                    payload = payload_by_qdrant_id.get(str(qdrant_id))
-                ordered_payloads.append(payload)
-
-            return ordered_payloads
+            return payloads
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
@@ -527,3 +559,54 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     f"[{self.workspace}] Error dropping Qdrant collection {self.namespace}: {e}"
                 )
                 return {"status": "error", "message": str(e)}
+
+
+if __name__ == "__main__":
+    """
+    Simple CLI runner to test inserting sample data into Qdrant.
+    Ensure your Qdrant is reachable (default http://localhost:6333) or set QDRANT_URL / QDRANT_API_KEY in .env.
+    """
+    from dotenv import load_dotenv
+    from icecream import ic
+    from lightrag.llm.azure_openai import azure_openai_embed
+
+    # Ensure shared storage (locks, namespaces, etc.) are initialized
+    from lightrag.kg.shared_storage import initialize_share_data
+    initialize_share_data()
+
+
+    # Load .env from current folder (do not override existing OS env vars)
+    load_dotenv()
+
+    async def _run_sample():
+        # minimal global_config required by QdrantVectorDBStorage
+        global_config = {
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+            "embedding_batch_num": 16,
+        }
+
+        metadata_filter = {
+            # "author": "John Doe",
+            "bse_code": 533330,
+        }
+
+        storage = QdrantVectorDBStorage(
+            namespace="local_chunks",
+            global_config=global_config,
+            embedding_func=azure_openai_embed,
+        )
+        await storage.initialize()
+        ic("storage initialized...")
+        if storage is None:
+            raise Exception("storage not initialized.............")
+
+
+        res = await storage.query(query="What is the story about?", top_k=50, metadata_filter=metadata_filter)
+        print("="*50)
+        print(res)
+        print("="*50)
+
+    try:
+        asyncio.run(_run_sample())
+    except Exception as e:
+        print("Sample run failed:", e)

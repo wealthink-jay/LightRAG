@@ -295,23 +295,17 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             if not result or not result["ids"] or len(result["ids"]) == 0:
                 return []
 
-            # Format the results to match the expected structure and preserve ordering
-            formatted_map: dict[str, dict[str, Any]] = {}
-            for i, result_id in enumerate(result["ids"]):
-                record = {
-                    "id": result_id,
+            # Format the results to match the expected structure
+            return [
+                {
+                    "id": result["ids"][i],
                     "vector": result["embeddings"][i],
                     "content": result["documents"][i],
                     "created_at": result["metadatas"][i].get("created_at"),
                     **result["metadatas"][i],
                 }
-                formatted_map[str(result_id)] = record
-
-            ordered_results: list[dict[str, Any] | None] = []
-            for requested_id in ids:
-                ordered_results.append(formatted_map.get(str(requested_id)))
-
-            return ordered_results
+                for i in range(len(result["ids"]))
+            ]
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []

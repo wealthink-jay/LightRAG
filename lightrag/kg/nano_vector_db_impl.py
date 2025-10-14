@@ -326,25 +326,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         client = await self._get_client()
         results = client.get(ids)
-        result_map: dict[str, dict[str, Any]] = {}
-
-        for dp in results:
-            if not dp:
-                continue
-            record = {
+        return [
+            {
                 **{k: v for k, v in dp.items() if k != "vector"},
                 "id": dp.get("__id__"),
                 "created_at": dp.get("__created_at__"),
             }
-            key = record.get("id")
-            if key is not None:
-                result_map[str(key)] = record
-
-        ordered_results: list[dict[str, Any] | None] = []
-        for requested_id in ids:
-            ordered_results.append(result_map.get(str(requested_id)))
-
-        return ordered_results
+            for dp in results
+        ]
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs, returning only ID and vector data for efficiency

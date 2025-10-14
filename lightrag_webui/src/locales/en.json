@@ -114,12 +114,10 @@
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan",
-      "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
-      "retryFailedButton": "Retry",
-      "retryFailedTooltip": "Retry processing all failed documents",
+      "scanTooltip": "Scan documents in input folder",
       "refreshTooltip": "Reset document list",
-      "pipelineStatusButton": "Pipeline",
-      "pipelineStatusTooltip": "View document processing pipeline status",
+      "pipelineStatusButton": "Pipeline Status",
+      "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
@@ -139,7 +137,6 @@
       "status": {
         "all": "All",
         "completed": "Completed",
-        "preprocessed": "Preprocessed",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
@@ -336,14 +333,14 @@
     },
     "search": {
       "placeholder": "Search nodes in page...",
-      "message": "And {{count}} others"
+      "message": "And {count} others"
     },
     "graphLabels": {
       "selectTooltip": "Get subgraph of a node (label)",
       "noLabels": "No matching nodes found",
       "label": "Search node name",
       "placeholder": "Search node name...",
-      "andOthers": "And {{count}} others",
+      "andOthers": "And {count} others",
       "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
       "refreshingTooltip": "Refreshing data..."
@@ -414,7 +411,7 @@
       "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
-      "userPrompt": "Additional Output Prompt",
+      "userPrompt": "User Prompt",
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
       "enableRerank": "Enable Rerank",

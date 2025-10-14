@@ -1,6 +1,11 @@
-from collections.abc import AsyncIterator
+import sys
 
-import pipmaster as pm
+if sys.version_info < (3, 9):
+    from typing import AsyncIterator
+else:
+    from collections.abc import AsyncIterator
+
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("ollama"):

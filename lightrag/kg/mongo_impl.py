@@ -155,20 +155,12 @@ class MongoKVStorage(BaseKVStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
-        docs = await cursor.to_list(length=None)
-
-        doc_map: dict[str, dict[str, Any]] = {}
+        docs = await cursor.to_list()
+        # Ensure time fields are present for all documents
         for doc in docs:
-            if not doc:
-                continue
             doc.setdefault("create_time", 0)
             doc.setdefault("update_time", 0)
-            doc_map[str(doc.get("_id"))] = doc
-
-        ordered_results: list[dict[str, Any] | None] = []
-        for id_value in ids:
-            ordered_results.append(doc_map.get(str(id_value)))
-        return ordered_results
+        return docs
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(keys)}}, {"_id": 1})
@@ -383,18 +375,7 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
-        docs = await cursor.to_list(length=None)
-
-        doc_map: dict[str, dict[str, Any]] = {}
-        for doc in docs:
-            if not doc:
-                continue
-            doc_map[str(doc.get("_id"))] = doc
-
-        ordered_results: list[dict[str, Any] | None] = []
-        for id_value in ids:
-            ordered_results.append(doc_map.get(str(id_value)))
-        return ordered_results
+        return await cursor.to_list()
 
     async def filter_keys(self, data: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(data)}}, {"_id": 1})
@@ -2422,20 +2403,15 @@ class MongoVectorDBStorage(BaseVectorStorage):
             cursor = self._data.find({"_id": {"$in": ids}})
             results = await cursor.to_list(length=None)
 
-            # Format results to include id field expected by API and preserve ordering
-            formatted_map: dict[str, dict[str, Any]] = {}
+            # Format results to include id field expected by API
+            formatted_results = []
             for result in results:
                 result_dict = dict(result)
                 if "_id" in result_dict and "id" not in result_dict:
                     result_dict["id"] = result_dict["_id"]
-                key = str(result_dict.get("id", result_dict.get("_id")))
-                formatted_map[key] = result_dict
+                formatted_results.append(result_dict)
 
-            ordered_results: list[dict[str, Any] | None] = []
-            for id_value in ids:
-                ordered_results.append(formatted_map.get(str(id_value)))
-
-            return ordered_results
+            return formatted_results
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"

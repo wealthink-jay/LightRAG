@@ -230,9 +230,10 @@ class LightragPathFilter(logging.Filter):
             path = record.args[2]
             status = record.args[4]
 
-            # Filter out successful GET/POST requests to filtered paths
+            # Filter out successful GET requests to filtered paths
             if (
-                (method == "GET" or method == "POST")
+                method == "GET"
+                or method == "POST"
                 and (status == 200 or status == 304)
                 and path in self.filtered_paths
             ):
@@ -1101,9 +1102,7 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     if existing_cache:
         existing_content = existing_cache.get("return")
         if existing_content == cache_data.content:
-            logger.warning(
-                f"Cache duplication detected for {flattened_key}, skipping update"
-            )
+            logger.info(f"Cache content unchanged for {flattened_key}, skipping update")
             return
 
     # Create cache entry with flattened structure
@@ -1472,7 +1471,8 @@ async def aexport_data(
 
     else:
         raise ValueError(
-            f"Unsupported file format: {file_format}. Choose from: csv, excel, md, txt"
+            f"Unsupported file format: {file_format}. "
+            f"Choose from: csv, excel, md, txt"
         )
     if file_format is not None:
         print(f"Data exported to: {output_path} with format: {file_format}")

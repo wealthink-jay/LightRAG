@@ -136,13 +136,15 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # History mesages is only send to LLM for context, not used for retrieval
+    # History messages is only send to LLM for context, not used for retrieval
+    # TODO: Deprecated - history message have negative effect on query performance
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
     # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
+    # TODO: Deprecated - history message have negative effect on query performance
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
@@ -154,8 +156,7 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    Addition instructions for LLM. If provided, this will be inject into the prompt template.
-    It's purpose is the let user customize the way LLM generate the response.
+    If provided, this will be use instead of the default value from prompt template.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
@@ -223,7 +224,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def query(
-        self, query: str, top_k: int, query_embedding: list[float] = None
+        self, query: str, top_k: int, query_embedding: list[float] = None, metadata_filter: dict[str, Any] = None
     ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results.
 
@@ -712,7 +713,6 @@ class DocStatus(str, Enum):
 
     PENDING = "pending"
     PROCESSING = "processing"
-    PREPROCESSED = "multimodal_processed"
     PROCESSED = "processed"
     FAILED = "failed"
 
